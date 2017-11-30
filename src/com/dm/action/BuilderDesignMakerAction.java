@@ -13,11 +13,10 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.CommandProcessor;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Editor;
-import com.intellij.openapi.editor.EditorModificationUtil;
 import com.intellij.openapi.project.Project;
-import com.intellij.psi.PsiClass;
-import com.intellij.psi.PsiField;
-import com.intellij.psi.PsiFile;
+import com.intellij.psi.*;
+import com.intellij.psi.codeStyle.CodeStyleManager;
+import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.util.PsiUtilBase;
 
 import java.util.ArrayList;
@@ -51,7 +50,7 @@ public class BuilderDesignMakerAction extends AnAction {
         ClassMember[] allOriginalMembers = members.toArray(new ClassMember[members.size()]);
         MemberChooser<ClassMember> chooser = createMembersChooser(allOriginalMembers, true, false, project);
         chooser.show();
-        final List<ClassMember> list =  chooser.getSelectedElements();
+        final List<ClassMember> list = chooser.getSelectedElements();
         if (list != null) {
             final ClassMember[] membersChosen = list.toArray(new ClassMember[list.size()]);
             CommandProcessor.getInstance().executeCommand(project, new Runnable() {
@@ -68,11 +67,69 @@ public class BuilderDesignMakerAction extends AnAction {
         }
     }
 
-    private void generateCode(Project project, Editor editor, PsiClass aClass, ClassMember[] membersChosen) {
+    private void generateCode(Project project, Editor editor, PsiClass mainClass, ClassMember[] membersChosen) {
         logger.warn("members size: " + membersChosen.length);
-        //1.generate getter and setter
+        PsiElementFactory factory = JavaPsiFacade.getInstance(project).getElementFactory();
 
-        //2.generate builder
+        //generate builder
+        PsiClass builderClass = factory.createClass("Builder");
+        PsiModifierList builderClassModifier = builderClass.getModifierList();
+        if (builderClassModifier != null) {
+            builderClassModifier.setModifierProperty(PsiModifier.PUBLIC, true);
+            builderClassModifier.setModifierProperty(PsiModifier.STATIC, true);
+        }
+
+        PsiMethod buildMethod = factory.createMethod("build", PsiType.getTypeByName(mainClass.getName(), project,
+                GlobalSearchScope
+                        .allScope(project)));
+        PsiCodeBlock body = buildMethod.getBody();
+        assert body != null;
+
+        String clazzTypeInstanceName = "builder" +  mainClass
+                .getName();
+
+        PsiStatement newClassTypeStatement = factory.createStatementFromText(mainClass.getName() + " " + clazzTypeInstanceName + "= new " + mainClass.getName() + "();",
+                body);
+        body.add(newClassTypeStatement);
+
+        for (ClassMember member : membersChosen) {
+            String[] memberTexts = member.getText().split(":");
+            String fieldName = memberTexts[0], fieldType = memberTexts[1];
+            String capturedFieldName = captureName(fieldName);
+
+            //generate getter and setter in mainclass
+            PsiMethod methodGet = factory.createMethodFromText("public " + fieldType + " get"
+                    + capturedFieldName + "(){return " + fieldName + ";}", mainClass);
+
+            PsiMethod methodSet = factory.createMethodFromText("public void set"
+                    + capturedFieldName + "(" + fieldType + " " + fieldName + "){this." + fieldName + "="
+                    + fieldName + ";}", mainClass);
+            mainClass.add(methodGet);
+            mainClass.add(methodSet);
+
+            //generate fields in builder
+            PsiField builderField = factory.createFieldFromText("private " + fieldType + " " + fieldName + ";",
+                    builderClass);
+            builderClass.add(builderField);
+
+            //generate setter in builder
+            PsiMethod methodSetInBuilder = factory.createMethodFromText("public Builder set" + capturedFieldName
+                    + "(" + fieldType + " " + fieldName + "){this." + fieldName + "=" + fieldName + ";return this;}", builderClass);
+            builderClass.add(methodSetInBuilder);
+
+            //generate build method in builder
+            PsiStatement setStatement = factory.createStatementFromText(clazzTypeInstanceName + ".set" + capturedFieldName + "(this." + fieldName + ");", body);
+            body.add(setStatement);
+        }
+
+        PsiStatement returnStatement = factory.createStatementFromText("return " + clazzTypeInstanceName + ";", body);
+        body.add(returnStatement);
+
+        builderClass.add(buildMethod);
+        mainClass.add(builderClass);
+
+
+        CodeStyleManager.getInstance(project).reformat(mainClass);
     }
 
 
@@ -89,5 +146,16 @@ public class BuilderDesignMakerAction extends AnAction {
     @Override
     public boolean startInTransaction() {
         return true;
+    }
+
+    /**
+     * e.g. name -> Name
+     * @param name
+     * @return
+     */
+    private String captureName(String name) {
+        name = name.substring(0, 1).toUpperCase() + name.substring(1);
+        return name;
+
     }
 }
